@@ -1,0 +1,43 @@
+---
+title: "Point estimates of hazard and survival function"
+author: "Samuel Messa"
+date: "November 11, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Data prep
+The dataset concerns itself with an engineering study of the time to failure of diesel generator fans. Seventy generators were studied. For each, the number of hours of running time from its first being put into service until fan failure or until the end of the study (whichever came first) was recorded.
+
+We begin by loading necessary libraries.
+```{r cars, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(survival)
+library(tidyverse)
+library(magrittr)
+library(knitr)
+library(texreg)
+```
+Next, we prepare the dataset. 
+
+  + Factorizing variables *treatement*, *sex* and *edema*. 
+  + Creating variable *delta* indicating whether the patient died. 
+  + Creating a separate category for the variable *treatment* indicating that the patient recieved neither the treatment nor the placebo. 
+  + Dropping the variable *id*.
+
+
+```{r}
+load(url("http://www.karlin.mff.cuni.cz/~vavraj/cda/data/fans.RData"))
+fans %>% 
+  group_by(time) %>%
+  summarise(d_i = sum(fail),censored = n() - d_i) %>% 
+  mutate(
+    y_i = rev(cumsum(rev(d_i+censored))),
+    di_yi = d_i/y_i,
+    Li = cumsum(di_yi),
+    Si = cumprod(1-di_yi),
+    Sstari = exp(-Li)
+    ) 
+```
+
