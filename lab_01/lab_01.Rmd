@@ -1,0 +1,143 @@
+---
+title: "Parametric regression models for censored data"
+author: "Samuel Messa"
+date: "November 4, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Data prep
+The dataset concerns itself with a trial from the Mayo Clinic of the liver conducted between years 1974 and 1984. There are 418 patients in total with 312 cases participating in the randomized trial and additional 106 cases who did not participate in the clinical trial, but consented to have basic measurements recorded and to be followed for survival.
+
+We begin by loading necessary libraries.
+```{r cars, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(survival)
+library(tidyverse)
+library(magrittr)
+library(knitr)
+library(texreg)
+```
+Next, we prepare the dataset. 
+
+  + Factorizing variables *treatement*, *sex* and *edema*. 
+  + Creating variable *delta* indicating whether the patient died. 
+  + Creating a separate category for the variable *treatment* indicating that the patient recieved neither the treatment nor the placebo. 
+  + Dropping the variable *id*.
+
+```{r}
+pbc <- survival::pbc[, c("time", "status", "trt", "sex", "edema", "bili", "albumin", "platelet")]
+categorical_vars <- c("trt", "sex", "edema")
+pbc %<>% 
+  mutate(delta = (status == 2), trt = replace_na(trt, 3))
+pbc %<>% 
+  mutate_at(categorical_vars,factor)
+levels(pbc$trt) <- c("_penicilin","_placebo","_non_randomized")
+levels(pbc$edema) <- c("_none","_untreated_or_sucess","_treatment_failed")
+```
+
+## Model estimation
+We are interested in the distribution of survival time of a patient denoted by $T$. Additonaly we denote:
+  
+  +  $C$ as the censoring time when the patient had (or would have had) transplantation or the time for which he/she has been observed.
+  +  $X$ as the time we actually observe i.e. the first event. Either the censoring time $C$ or $T$. Therefore: $X = \min{(T,C)}$
+  +  We also define $\delta$ as an indicator containing information on what event actually happened. Formally, $\delta = \mathbb{1}(T<C)$
+  
+Our proposed model will assume 
+
+  + The triplets $\left(X_i, \delta_i, \mathbf{Z}_i\right) \forall i = 1,2,\dots,n$ are stochastically independent. 
+  + The censoring times $C_i$ are independent of the survival times $T_i$
+  + $T_i | \mathbf{Z}_i \sim \mathsf{Exp} \left(\lambda(\mathbf{Z}_i, \boldsymbol\beta) \right)$ 
+  + $\lambda(\mathbf{Z}, \boldsymbol \beta) = \lambda_0 \exp \left\{  \mathbf{Z}^{\mathsf{T}} \boldsymbol\beta  \right\}$
+  
+This model formulation is equivalent to the Poisson loglinear model with $\delta_i$ as the response and $\log(X_i)$ as an offset (a regressor with a fixed coefficient of 1). 
+
+We begin by fitting a baseline model which includes every covariate present in the dataset.   
+```{r echo=FALSE, results='asis'}
+cens_fit <- pbc %>%
+  glm(
+    formula = delta ~ trt + sex + edema + bili + albumin + platelet + offset(log(time)),
+    family=poisson
+    )
+cens_fit %>% htmlreg(single.row=TRUE,custom.model.names = c("Baseline Model"))
+```
+We note two things. First, the number of observations used to estimate the coefficients of the baseline model dropped from 418 (the number of observations in the dataset) to 407. This is because, there exist observations where there are missing values present for the variable *platelet*. Moreover, as the regression summary table above suggests, the coeffecient corresponding to *platelet* is not statistically significant. Therefore, a decision was made to remove the variable *platelet* from the dataset and include the observations with missing values in subsequent analysis. 
+
+In order to gain insight on how to parametrize the numeric variables in our dataset we plot their estimated coefficients from a model, where the numeric variable in questions is binned and treated as categorical.
+
+```{r,fig.show = "hold", out.width = "50%",echo=FALSE}
+variables <- c("bili", "albumin")
+PlotCoefFactor <- function(variable, ngroups = 10){
+  # ngroups >= 2 !!!!
+  if(ngroups < 2){stop("ngroups has to be at least 2!")}
+  othervar <- setdiff(variables, variable)
+  qq <- quantile(pbc[,variable], probs = seq(0,1,length.out = ngroups+1))
+  ff <- cut(pbc[,variable], breaks = c(-Inf, qq[2:ngroups], Inf))
+  model <- pbc %>% 
+    add_column(ff) %>%
+    glm(formula = as.formula(paste("delta ~ trt + sex + edema + ff +",paste(setdiff(variables, variable), collapse = " + "), " + offset(log(time))", sep = "")),
+        family = poisson)
+  yy <- c(0, # coefficient for the first (reference group)
+          model$coefficients[grep("ff", names(model$coefficients))]) 
+  xx <- (qq[1:ngroups]+qq[2:(ngroups+1)])/2
+  plot(yy ~ xx, 
+       type = "b", 
+       xlab = variable, 
+       ylab = "Coefficient",
+       cex = summary(ff)/max(summary(ff))*2+0.5)
+  }
+PlotCoefFactor("bili")
+PlotCoefFactor("albumin")
+```
+As we can see the variable *bili* clearly shows what could be interpreted as a logarithmic relationship and the variable *albumin* is somewhat linear. 
+Therefore we consider a model, where we apply a logarithmic transformation to *bili*. Morover, as suggested above, we remove *platelet*.
+
+We compare our proposed model with the baseline additive model estimated above. 
+
+```{r, echo=FALSE, results='asis'}
+pruned_model <- pbc %>%
+  glm(
+    formula = delta ~ trt + sex + edema + log(bili) + albumin + offset(log(time)),
+    family=poisson
+    )
+
+htmlreg(list(cens_fit,pruned_model), single.row=TRUE,custom.model.names = c("Baseline Model","Pruned Model"))
+```
+
+We do not remove the variable *trt* as the purpose of the model is a medical study where the effect of the treatment is in question. 
+Other models, where interactions or dropped terms were considered, however none were shown to be significantly better. Therefore we will consider the *pruned model* to be our final model. 
+
+## Model interpretation
+
+The final has the following form:
+$\mathit{delta} \backsim  \mathit{trt} + \mathit{sex} + \mathit{edema} + \log \mathit{bili} + \mathit{albumin} + \mathit{offset} \left( \log \mathit{time} \right)$
+
+The regression function is shown below:
+$$ 
+\begin{aligned}
+\log \left( \mathbf{(E}[ \mathit{delta}] \right) =  & \beta_0 + \\ 
+& \beta_{1} \times \mathbb{1} \left[trt = \text{placebo} \right] +\\
+&\beta_{2} \times \mathbb{1} \left[trt = \text{not randomized} \right] +\\
+&\beta_{3} \times \mathbb{1} \left[sex = \text{female} \right] + \\
+&\beta_{4} \times \mathbb{1} \left[edema = \text{untreated or sucess} \right] +\\
+&\beta_{5} \times \mathbb{1} \left[edema = \text{treatment failed} \right] + \\
+&\beta_{6} \times \log \mathit{bili} + \\
+&\beta_{7} \times \mathit{albumin} + \\
+&\log \left( \mathit{time} \right)
+\end{aligned}
+$$
+  
+  + **Intercept** 
+
+  The intercept term $\lambda_0 = \exp{\beta_0}$ corresponds to the baseline hazard i.e. the hazard for a male patient who received the treatment without an edema, where all other numeric covariates are equal to 0. This has limited interpretation, however the numeric covariates could be shifted such that the intercept is more interpretable. 
+
+  + **Coefficients for categorical covariates**
+
+  The coeffcient $\beta_3$ corresponding to the variable *sex* has multiplicative interpretation. More specifically the hazard of a female patient is $\exp{\beta_3}$ times larger than a patient who is male, all other covariates being equal. 
+
+  + **Coefficients for numeric covariates**
+  
+  The coeffcient $\beta_7$ corresponding to the variable *albumin* can be interpreted as follows. A unit change in the variable *albumin* corresponds to $\exp{\beta_7}$ times larger hazard, all other covariates being equal. 
+  
+  
