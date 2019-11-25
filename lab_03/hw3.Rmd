@@ -1,0 +1,153 @@
+---
+title: "Censored Data Analysis HW 3"
+author: "Samuel Messa"
+date: "November 24, 2019"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Data prep
+The datasets which wil be the subject of our analysis contain mortality data from the Czech Republic in the year 2013 for males and females. Each dataframe has three columns: 
+  
+  + $i$, representing the age group (going from the age $i$ years to $i+1$ years) 
+  + $Di$ representing the number of deaths in the age group in 2013
+  + $Yi$ representing the number of people alive when they reached the age $i$
+
+We begin by loading necessary libraries and the datasets.
+```{r, message=FALSE, warning=FALSE, paged.print=FALSE}
+load(url("http://karlin.mff.cuni.cz/~vavraj/cda/data/mort.RData"))
+library(httr)
+library(survival)
+library(tidyverse)
+library(ggpubr)
+library(magrittr)
+library(knitr)
+library(KMsurv)
+library(readxl)
+```
+# Task 1
+First, we construct the Nelson-Aalen and Kaplan-Meier estimates for males and females. The logic behind their construction is analogous to previous assignments. 
+```{r}
+mort.f %<>% mutate(
+  cumYi = Yi %>% rev() %>% cumsum() %>% rev(),
+  ratio = Di/cumYi,
+  NA_i = ratio %>% cumsum(),
+  KM_i = (1-ratio) %>% cumprod(),
+  censored = Yi - Di,
+  gender = "female"
+)
+mort.m %<>% mutate(
+  cumYi = Yi %>% rev() %>% cumsum() %>% rev(),
+  ratio = Di/cumYi,
+  NA_i = ratio %>% cumsum(),
+  KM_i = (1-ratio) %>% cumprod(),
+  censored = Yi - Di,
+  gender = "male"
+)
+mort <- rbind(mort.f,mort.m)
+```
+
+The Kaplan-Meier estimates can are visualized in the figure below.
+
+```{r,fig.width=11}
+mort %>% 
+  ggplot() +
+  geom_step(mapping = aes(x = i, y = KM_i, color = gender)) + 
+  expand_limits(y = c(0,1)) + 
+  theme_classic() + 
+  xlab("Time [years]") + 
+  ylab("Survival Probability") + 
+  ggtitle("Kaplan-Meier estimate of the survival function")
+```
+
+Next we construct the actuarial estimates of the survival function. 
+
+```{r}
+act_estimate_female <- mort %>% 
+  filter(gender == "female") %$% 
+  lifetab(tis = c(i,106), ninit = cumYi[1],nlost = censored,nevent = .$Di) %>% 
+  mutate(gender = "female",i = 0:105)
+act_estimate_male <- mort %>% 
+  filter(gender == "male") %$% 
+  lifetab(tis = c(i,106), ninit = cumYi[1],nlost = censored,nevent = .$Di) %>% 
+  mutate(gender = "male",i = 0:105)
+act_estimate <- rbind(act_estimate_female,act_estimate_male)
+```
+
+And plot the results
+
+```{r,fig.width=11}
+act_estimate %>% 
+  ggplot() +
+  geom_step(mapping = aes(x = i, y = surv, color = gender)) + 
+  expand_limits(y = c(0,1)) + 
+  theme_classic() + 
+  xlab("Time [year]") + 
+  ylab("Survival Probability") + 
+  ggtitle("Actuarial estimate of the survival function")
+```
+
+Visualizing both of the estimates gets us to the following figure:
+
+```{r, fig.width=11, fig.height=10}
+estimates <- rbind(
+  act_estimate %>% transmute(time = i, surv = surv, estimate = "actuarial",gender = gender),
+  mort %>% transmute(time = i, surv = KM_i, estimate = "Kaplan-Meier", gender = gender)
+  )
+estimates %>% 
+  ggplot() +
+  geom_step(mapping = aes(x = time, y = surv, color = estimate)) + 
+  expand_limits(y = c(0,1)) + 
+  theme_classic() + 
+  xlab("Time [years]") + 
+  ylab("Survival Probability") + 
+  ggtitle("Comparison of actuarial and Kaplan-Meier estimates of the survival function") + 
+  facet_wrap( ~gender ,nrow  = 2)
+```
+
+#Task 2
+In this task we compare the results from the previous section to the official mortality tables provided by ČSÚ. We begin by loading the tables for both women and men. 
+
+```{r, results='hide'}
+mort_tables_female_url <- "http://karlin.mff.cuni.cz/~vavraj/cda/data/umrtnost_cr_z_2013.xlsx"
+mort_tables_male_url <- "http://karlin.mff.cuni.cz/~vavraj/cda/data/umrtnost_cr_m_2013.xlsx"
+passthrough <- GET(mort_tables_female_url, write_disk(tf_female <- tempfile(fileext = ".xlsx")))
+passthrough <- GET(mort_tables_male_url, write_disk(tf_male <- tempfile(fileext = ".xlsx")))
+mort_tables_female <- read_excel(tf_female,skip = 2) %>% 
+  transmute(
+    time = `věk  age`,
+    estimate = "ČSÚ",
+    surv = cumprod(1 - qx),
+    gender = "female"
+    )
+mort_tables_male <- read_excel(tf_male,skip = 2) %>% 
+  transmute(
+    time = `věk  age`,
+    estimate = "ČSÚ",
+    surv = cumprod(1 - qx),
+    gender = "male"
+    )
+```
+Questions posed: 
+
+  1. Can you recognize the columns in their table?
+    + Column $Dx$ corresponds to the column $Di$, i.e the number of deaths in the age group $i$ in 2013
+    + Column $Px$ corresponds to the column $Yi$, i.e the number of people alive when they reached the age $i$
+  2. Survival function estimates comparison
+    + The survival function is derived based on the values of $qx$, with the results for both males and females shown in the figure below
+    + A we can observe the survival function based on the life tables is somewhat different. This is due to the fact that the ČSÚ constructs the estimates differently for different ages. More specifically,as the age/time increases they move from the true observed values, interpolated values, combination of interploated and model values and model values. This is to compensate for less accurate estimates for higher ages where lack of data is an issue.
+
+```{r,fig.width=11, fig.height=10}
+estimates_all <- rbind(estimates, mort_tables_female,mort_tables_male)
+estimates_all %>%
+  ggplot() +
+  geom_step(mapping = aes(x = time, y = surv, color = estimate)) + 
+  expand_limits(y = c(0,1)) + 
+  theme_classic() + 
+  xlab("Time [years]") + 
+  ylab("Survival Probability") + 
+  ggtitle("Comparison of all surival function estimates") + 
+  facet_wrap( ~gender ,nrow  = 2)
+```
+
