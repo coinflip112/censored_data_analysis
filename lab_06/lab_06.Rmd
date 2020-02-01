@@ -1,0 +1,362 @@
+---
+title: "Building Cox models for censored data (constant covariates)"
+author: "Samuel Messa"
+date: "December 17, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Data prep
+The dataset concerns itself with a trial from the Mayo Clinic of the liver conducted between years 1974 and 1984. There are 418 patients in total with 312 cases participating in the randomized trial and additional 106 cases who did not participate in the clinical trial, but consented to have basic measurements recorded and to be followed for survival.
+
+We begin by loading necessary libraries.
+```{r cars, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(survival)
+library(survminer)
+library(ggfortify)
+library(muhaz)
+library(tidyverse)
+library(magrittr)
+library(knitr)
+library(texreg)
+```
+Next, we prepare the dataset. 
+
+  + Factorizing variables *treatement*, *sex* and *edema*. 
+  + Creating variable *delta* indicating whether the patient died. 
+  + Dropping the variable *id*.
+
+```{r}
+pbc <- survival::pbc[, c("time", "status", "trt", "sex", "edema", "bili", "albumin", "platelet")]
+categorical_vars <- c("trt", "sex", "edema")
+pbc %<>% 
+  mutate(
+    delta = (status == 2), 
+    high_bili = bili >= median(bili)
+    )
+pbc %<>% 
+  mutate_at(categorical_vars,factor)
+levels(pbc$trt) <- c("Penicilin","Placebo")
+pbc$trt %<>% relevel(ref = "Placebo")
+levels(pbc$edema) <- c("None","UntreatedOrSucess","TreatmentFailed")
+```
+
+# Task 1
+
+In this task we will explore the binary variables *sex* and the newly created variable $\textit{high_bili} = \mathbf{1}(bili \geq median(bili))$.
+
+### Variable Sex 
+
+First we plot the Kaplan-Meier, Nelson-Aalen, and smoothed hazard estimates for males and females individually.
+
+```{r, fig.height=10,fig.width=15}
+pbc_fit_sex <- pbc %>% survfit(formula = Surv(time = time,event = delta) ~ sex)
+km_sex <- pbc_fit_sex %>% 
+  autoplot(conf.int = FALSE, main = "Kaplan-Meier estimators",censor = FALSE) +
+  scale_color_brewer("", palette = "Accent") +
+  scale_fill_brewer("", palette = "Accent") +
+  xlab("Time") +
+  ylab("Survival probability") +
+  theme_classic() 
+na_sex <- pbc_fit_sex %>%
+  autoplot(conf.int = FALSE, fun="cumhaz", main = "Nelson-Aalen estimators",censor = FALSE) +
+  scale_color_brewer("", palette = "Accent") +
+  scale_fill_brewer("", palette = "Accent") +
+  xlab("Time") +
+  ylab("Survival probability") +
+  theme_classic()
+
+smooth_all <- pbc %$% muhaz(time,delta)
+pbc_male <- pbc %>% filter(sex=="m") %$% muhaz(time,delta)
+pbc_female <- pbc %>% filter(sex=="f") %$% muhaz(time,delta)
+
+sh_sex_df <- rbind(
+    tibble(
+      time = pbc_male$est.grid, 
+      value = pbc_male$haz.est,
+      sex ="Male"
+      ),
+    tibble(
+      time = pbc_female$est.grid, 
+      value = pbc_female$haz.est,
+      sex ="Female"
+      )
+    )
+sh_sex <- sh_sex_df %>% 
+  ggplot() +
+  geom_line(aes(x = time, y = value, color = sex))+
+  ylab("Hazard rate")+
+  theme_classic()
+
+ggarrange(km_sex,na_sex,sh_sex,ncol = 1)
+```
+
+The assumption of proportional hazards could be considered justified. Especially if we consider, that the smoothed hazard estimates for male patients is likely not that precise for higher times due to the lower number of observations for male patients.
+
+Next, we present the results of the log-rank test with the null being equality of the survival function (or equivalently cumulative hazards) for male and female patients. We do not reject the null at the significance level $\alpha = 0.05$.
+
+```{r}
+pbc %>% FHtest::FHtestrcc(formula = Surv(time,delta)~sex,data = .)
+```
+
+### Variable HighBili 
+
+We continue with plotting the Kaplan-Meier, Nelson-Aalen, and smoothed hazard estimates for patients having higher/lower levels of bilirubin than the median across both groups.
+
+```{r, fig.height=10,fig.width=15}
+pbc_fit_high_bili <- pbc %>% survfit(formula = Surv(time = time,event = delta) ~ high_bili)
+km_high_bili <- pbc_fit_high_bili %>% 
+  autoplot(conf.int = FALSE, main = "Kaplan-Meier estimators",censor = FALSE) +
+  xlab("Time") +
+  ylab("Survival probability") +
+  theme_classic() 
+na_high_bili <- pbc_fit_high_bili %>%
+  autoplot(conf.int = FALSE, fun="cumhaz", main = "Nelson-Aalen estimators",censor = FALSE) +
+  xlab("Time") +
+  ylab("Survival probability") +
+  theme_classic()
+
+smooth_high_bili <- pbc %$% muhaz(time,delta)
+pbc_high_bili <- pbc %>% filter(high_bili) %$% muhaz(time,delta)
+pbc_low_bili <- pbc %>% filter(!high_bili) %$% muhaz(time,delta)
+
+sh_high_bili_df <- rbind(
+    tibble(
+      time = pbc_high_bili$est.grid, 
+      value = pbc_high_bili$haz.est,
+      bili ="High"
+      ),
+    tibble(
+      time = pbc_low_bili$est.grid, 
+      value = pbc_low_bili$haz.est,
+      bili ="Low"
+      )
+    )
+sh_high_bili <- sh_high_bili_df %>% 
+  ggplot() +
+  geom_line(aes(x = time, y = value, color = bili))+
+  ylab("Hazard rate")+
+  theme_classic()
+
+ggarrange(km_high_bili,na_high_bili,sh_high_bili,ncol = 1)
+```
+
+Next we present the results of the log-rank test with the null being equality of the survival function (or equivalently cumulative hazards) for patients with high/low levels of bilirubin. This time we reject the null at the significance level $\alpha = 0.05$. 
+
+```{r}
+pbc %>% FHtest::FHtestrcc(formula = Surv(time,delta)~high_bili,data = .)
+```
+# Task 2
+
+### Variable Treatment
+
+In this section a Cox proportional hazard with a single covariate *treatment* is fitted. The estimated coefficient can be interpreted as follows: \
+
+$$
+\begin{align}
+\exp \beta_{\text{penicilin}} = \dfrac{\lambda(t| \mathbf{Z} + \mathbf{e}_j)}{\lambda(t| \mathbf{Z})}
+\end{align}
+$$ 
+  
+More specifically, the hazard of patients given Penicillin is $\exp \beta_{\text{penicilin}} = 1.05889$ times higher, than in patients given placebo. 
+
+The confidence interval for $\exp \beta_{\text{penicilin}}$ is $(0.7453, 1.504)$. Its interpretation is analogous to confidence intervals for coefficients in classical regression models i.e. the interval provides coverage of the exponated coefficient with at the specified level $1-\alpha$. 
+
+Next we plot the estimated survival functions for both groups based on the Cox model compared with Kaplan-Meier estimators of the corresponding two samples. 
+
+```{r,fig.height=10,fig.width=15}
+trt_fit <- coxph(formula = Surv(time,delta)~trt, data = pbc)
+trt_cox_plot <- ggadjustedcurves(trt_fit,variable = "trt",method = "average",data = pbc)
+trt_km_plot <- survfit(Surv(time,delta)~trt,data = pbc) %>% 
+  autoplot(conf.int = FALSE, main = "Kaplan-Meier estimators",censor = FALSE) +
+  xlab("Time") +
+  ylab("Survival probability") +
+  theme_classic() +
+  expand_limits(y = c(0,1))
+ggarrange(trt_cox_plot$plot_env$pl,trt_km_plot,ncol = 2)
+```
+
+Comparing the two plots, we immediately see that the non-parametric KM estimates seem to cross each other. This could indicate that the variable *trt* does not in fact satisfy the proportional hazard assumption. 
+
+Lastly, we compare the output of the fitted model with a log-rank test with the null being the equality of cumulative hazards between patients given penicillin and patients given the placebo. As we can see, the test is equivalent to testing the significance of coefficient *trtPenicilin*. Both do not reject the null of equality of cumulative hazards. 
+
+```{r}
+trt_fit%>% summary()
+pbc %>% FHtest::FHtestrcc(formula = Surv(time,delta)~trt,data = .)
+```
+
+### Variable BiliRubin
+
+In this section a Cox proportional hazard with a single covariate (*BiliQuant* defined as the variable *bili* cut by sample quartiles) is fitted. 
+
+The estimated coefficients corresponding to the given quartiles can be interpreted as follows: the hazard of patients having the levels of bilirubin in the given quartile is $\exp \beta_{\text{quartile}}$ times higher than in patients with bilirubin levels in the first quartile. 
+
+```{r}
+pbc %<>% mutate(BiliQuant = gtools::quantcut(bili))
+bili_fit <- coxph(formula = Surv(time,delta)~BiliQuant, data = pbc) 
+bili_fit %>% summary()
+```
+
+Next we plot the estimated survival functions for all 4 groups based on the Cox model compared with Kaplan-Meier estimators of the corresponding 4 samples. 
+
+```{r,fig.height=10,fig.width=15}
+bili_cox_plot <- ggadjustedcurves(bili_fit,variable = "BiliQuant",method = "average",data = pbc) 
+bili_km_plot <- survfit(Surv(time,delta)~BiliQuant,data = pbc) %>% 
+  autoplot(conf.int = FALSE, main = "Kaplan-Meier estimators",censor = FALSE) +
+  xlab("Time") +
+  ylab("Survival probability") +
+  theme_classic() +
+  expand_limits(y = c(0,1))
+ggarrange(bili_cox_plot$plot_env$pl+ expand_limits(x = c(0,5000)),bili_km_plot,ncol = 2)
+```
+
+The plots are similar and the survival functions show clear difference for increasing values of *bilirubin*, reinforcing our intuition that the variable *bili* will be significant. 
+
+# Task 3
+
+### Baseline additive model
+
+In this section a Cox proportional hazard model for survival of PBC patients will be built. We first encode the missing values in variable *trt* as Non-randomized. 
+
+```{r}
+pbc %<>% 
+  mutate(
+    trt = forcats::fct_explicit_na(trt, "NonRandmized")
+    )
+```
+
+Next a baseline model with the original variables is fitted.
+
+```{r,results='asis'}
+baseline_model <- pbc %>% 
+  coxph(formula = Surv(time = time,event = delta) ~ trt + sex + edema + bili + albumin + platelet, data = .) 
+baseline_model_summary <- baseline_model %>% summary()
+baseline_model%>% 
+  htmlreg(
+  single.row=TRUE,
+  custom.model.names = c("Baseline Model"),
+  override.coef = list(exp(baseline_model$coefficients)),
+  include.rsquared = FALSE,
+  include.adjrs = FALSE,
+  include.maxrs = FALSE,
+  ci.force = TRUE,
+  override.ci.low = baseline_model_summary$conf.int[,3],
+  override.ci.up = baseline_model_summary$conf.int[,4]
+  )
+```
+
+### Variable parametrization
+
+In order to gain insight on how to parametrize the numeric variables in our dataset we plot their estimated coefficients from the baseline model, where the numeric variable in questions is binned and treated as categorical. 
+```{r}
+variables <- c("bili", "albumin","platelet")
+PlotCoefFactor <- function(variable, ngroups = 10){
+  # ngroups >= 2 !!!!
+  if(ngroups < 2){stop("ngroups has to be at least 2!")}
+  othervar <- setdiff(variables, variable)
+  qq <- quantile(pbc[,variable], probs = seq(0,1,length.out = ngroups+1),na.rm = TRUE)
+  ff <- cut(pbc[,variable], breaks = c(-Inf, qq[2:ngroups], Inf))
+  model <- pbc %>% 
+    add_column(ff) %>%
+    coxph(formula = as.formula(paste("Surv(time = time,event = delta) ~ trt + sex + edema + ff + ", paste(setdiff(variables, variable), collapse = "+"), sep = "")), data = .)
+  yy <- c(0, # coefficient for the first (reference group)
+          model$coefficients[grep("ff", names(model$coefficients))]) 
+  xx <- (qq[1:ngroups]+qq[2:(ngroups+1)])/2
+  plot(yy ~ xx, 
+       type = "b", 
+       xlab = variable, 
+       ylab = "Coefficient",
+       cex = summary(ff)/max(summary(ff))*2+0.5)
+  }
+PlotCoefFactor("bili")
+PlotCoefFactor("albumin")
+PlotCoefFactor("platelet")
+```
+
+As we can see the variable *bili* clearly shows a logarithmic shape and the variables *albumin* and *platelet* are somewhat linear. 
+Therefore we consider a model, where we apply a logarithmic transformation to *bili*.
+
+### Final Model
+
+```{r,results='asis'}
+log_bili_model <- pbc %>% 
+  drop_na() %>% 
+  coxph(formula = Surv(time = time,event = delta) ~ trt + sex + edema + log(bili) + albumin + platelet, data = .) 
+log_bili_model_summary <- log_bili_model %>% summary()
+log_bili_model%>% 
+  htmlreg(
+  single.row=TRUE,
+  custom.model.names = c("Baseline Model"),
+  override.coef = list(exp(log_bili_model$coefficients)),
+  include.rsquared = FALSE,
+  include.adjrs = FALSE,
+  include.maxrs = FALSE,
+  ci.force = TRUE,
+  override.ci.low = log_bili_model_summary$conf.int[,3],
+  override.ci.up = log_bili_model_summary$conf.int[,4]
+  )
+```
+
+Additionally, we conduct likelihood ratio tests for sub-models for all considered covariates. 
+
+```{r}
+drop1(log_bili_model,test = "Chisq")
+```
+
+Besides the variable *trt*, which needs to be kept in the model, the variable *platelet* is shown to not be significant. Therefore, it is removed from the model. This additionally allows us to utilize the 11 observations, where the variable *platelet* is missing.
+
+We once again attempt conduct likelihood ratio tests for sub-models for remaining covariates. With the results showing all variables statistically significant at $\alpha = 0.05$, besides the variable *sex*. However the variable is kept as the corresponding p-value is deemed low enough, to not warrant removal. 
+
+```{r}
+final_model <- pbc %>% 
+  coxph(formula = Surv(time = time,event = delta) ~ trt + sex + edema + log(bili) + albumin, data = .) 
+final_model_summary <- final_model %>% 
+  summary()
+drop1(final_model,test = "Chisq")
+```
+
+As all other covariates are statistically significant and addition of previously removed covariates does not improve the model we consider the following model as final.
+
+$$ 
+\begin{aligned}
+\lambda(t| \mathbf{Z}) = \lambda_0(t) \text{ exp}(&\beta_{1} \times \mathbb{1} \left[trt = \text{penicilin} \right] + \\ 
+&\beta_{2} \times \mathbb{1} \left[trt = \text{not randomized} \right] +\\
+&\beta_{3} \times \mathbb{1} \left[sex = \text{female} \right] + \\
+&\beta_{4} \times \mathbb{1} \left[edema = \text{untreated or sucess} \right] +\\
+&\beta_{5} \times \mathbb{1} \left[edema = \text{treatment failed} \right] + \\
+&\beta_{6} \times \log (\mathit{bili}) + \\
+&\beta_{7} \times \mathit{albumin})
+\end{aligned}
+$$
+
+### Parametric model comparison
+
+Lastly, we compare the newly fitted Cox PH model with the parametric model fitted in previous hw assignments, where we assumed that the survival times are exponentially distributed (conditionally on the covariates). 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+pruned_model <- pbc %>%
+  glm(
+    formula = delta ~ trt + sex + edema + log(bili) + albumin + offset(log(time)),
+    family=poisson
+    )
+
+htmlreg(
+  list(final_model,pruned_model), 
+  single.row=TRUE,
+  custom.model.names = c("Cox PH Model","Parametric Model"),
+  override.coef = list(exp(final_model$coefficients),exp(pruned_model$coefficients)),
+  include.rsquared = FALSE,
+  include.adjrs = FALSE,
+  include.maxrs = FALSE,
+  ci.force = TRUE,
+  override.ci.low = list(final_model_summary$conf.int[,3],exp(confint(pruned_model)[,1])),
+  override.ci.up = list(final_model_summary$conf.int[,4],exp(confint(pruned_model)[,2]))
+  )
+```
+  
+
+The chosen coefficients and their parametrization remain the same. However, as expected an intercept term is not fitted for the Cox model. 
+
+The exponated coefficients are mostly in agreement with the only considerable difference being the coefficient corresponding to *edemaTreatmentFailed*, which is higher in the Cox Model. 
