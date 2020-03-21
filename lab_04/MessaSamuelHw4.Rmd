@@ -1,0 +1,183 @@
+---
+title: "Censored Data Analysis HW 4 (GG-stuff)"
+author: "Samuel Messa"
+date: "November 25, 2019"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data prep
+```{r, message=FALSE, warning=FALSE, paged.print=FALSE}
+load(url("http://karlin.mff.cuni.cz/~vavraj/cda/data/km_all.RData"))
+library(httr)
+library(ggfortify)
+library(survival)
+library(tidyverse)
+library(ggpubr)
+library(magrittr)
+library(knitr)
+library(KMsurv)
+library(readxl)
+library(km.ci)
+library(survminer)
+library(Kmisc)
+```
+# Task 1
+
+## Pointwised CI
+
+*GGplot* can certainly be used when working with censored data. The most straightforwad usage is via the generic *autoplot* which is extended by the package *ggfortify*. The *survfit* object is first defined, with the appropriate CI type, and subsequently the fit object can be piped into the autoplot function (without the need to pass the original dataset). All discussed types of pointwise confidence intervals can be observed below.
+```{r, fig.width=14, fig.height=10}
+plain <- all %>% 
+  survfit(formula = Surv(time,delta)~1, data=., conf.type="plain", conf.int=0.95) %>% 
+  autoplot(surv.colour = 'indianred', main = "Kaplan-Meier estimator & plain pointwise confidence intervals (all patients)", censor = FALSE) + 
+  xlab("Time") +
+  ylab("Survival probability") +
+  expand_limits(y=c(0, 1)) + 
+  theme_classic()
+log <- all %>% 
+  survfit(formula = Surv(time,delta)~1, data=., conf.type="log", conf.int=0.95) %>%
+  autoplot(surv.colour = 'indianred', main = "Kaplan-Meier estimator & log pointwise confidence intervals (all patients)", censor = FALSE) + 
+  xlab("Time") +
+  ylab("Survival probability") +
+  expand_limits(y=c(0, 1)) + 
+  theme_classic()
+log_log <- all %>% 
+  survfit(formula = Surv(time,delta)~1, data=., conf.type="log-log", conf.int=0.95) %>% 
+  autoplot(surv.colour = 'indianred', main = "Kaplan-Meier estimator & log-log pointwise confidence intervals (all patients)", censor = FALSE) + 
+  xlab("Time") +
+  ylab("Survival probability") +
+  expand_limits(y=c(0, 1)) + 
+  theme_classic()
+logit <- all %>% 
+  survfit(formula = Surv(time,delta)~1, data=., conf.type="logit", conf.int=0.95) %>% 
+  autoplot(surv.colour = 'indianred', main = "Kaplan-Meier estimator & logit pointwise confidence intervals (all patients)", censor = FALSE) + 
+  xlab("Time") +
+  ylab("Survival probability") +
+  expand_limits(y=c(0, 1)) + 
+  theme_classic()
+ggarrange(plain,log,log_log,logit)
+```
+
+The same function can be used to plot fits based on different groups, showing the groups together or faceting the plot through a boolean argument. 
+
+```{r,fig.width=14, fig.height=6}
+faceted <- all %>%
+  survfit(Surv(time,delta)~type, data = ., conf.type="plain", conf.int=0.95) %>%
+  autoplot(facets = TRUE, nrows = 2, censor = FALSE,main = "Kaplan-Meier estimator & pointwise confidence intervals") +
+  xlab("Time") +
+  ylab("Survival probability") +
+  expand_limits(y=c(0, 1)) +
+  theme_classic() 
+non_faceted <- all %>%
+  survfit(Surv(time,delta)~type, data = ., conf.type="plain", conf.int=0.95) %>%
+  autoplot(facets = FALSE, nrows = 2, censor = FALSE,main = "Kaplan-Meier estimator & pointwise confidence intervals") +
+  xlab("Time") +
+  ylab("Survival probability") +
+  expand_limits(y=c(0, 1)) +
+  theme_classic() 
+ggarrange(faceted,non_faceted)
+```
+
+# Confidence Bounds
+
+Analogical syntax can be used to produce confidence bounds of various types. However, no pleasent syntax is available for differentiating based on a categorical variable. Therefore a filter must be applied to the dataset beforehand and an intercept only model is then constructed.
+
+```{r,fig.width=14, fig.height=6}
+hw_all_patients <- all %>% 
+  survfit(Surv(time,delta)~1, data = .) %>% 
+  km.ci(conf.level=0.95, tl = 0.06 , tu = 57, method="hall-wellner")
+hw_all_patients$n.censor %<>% head(hw_all_patients$lower %>% length())
+
+hw_type1 <- all %>%
+  filter(type==1) %>%
+  survfit(Surv(time,delta)~1, data = .) %>% 
+  km.ci(conf.level=0.95, tl = 0.06 , tu = 60, method="hall-wellner")
+hw_type1$n.censor %<>% head(hw_type1$lower %>% length())
+
+hw_type2 <- all %>%
+  filter(type==2) %>%
+  survfit(Surv(time,delta)~1, data = .) %>% 
+  km.ci(conf.level=0.95, tl = 0.7 , tu = 56, method="hall-wellner")
+hw_type2$n.censor %<>% head(hw_type2$lower %>% length())
+
+hw_all <- hw_all_patients %>%
+  autoplot(surv.colour = 'indianred', main = "Kaplan-Meier estimator & Hall-Wellner confidence bounds (all patients)", censor = FALSE) +
+  xlab("Time") +
+  ylab("Survival probability") +
+  theme_classic()
+
+hw_type1 <- hw_type1 %>%
+  autoplot(surv.colour = 'indianred', main = "Kaplan-Meier estimator & Hall-Wellner confidence bounds (Type = 1)", censor = FALSE) +
+  xlab("Time") +
+  ylab("Survival probability") +
+  theme_classic()
+
+hw_type2 <- hw_type2 %>%
+  autoplot(surv.colour = 'indianred', main = "Kaplan-Meier estimator & Hall-Wellner confidence bounds (Type = 2)", censor = FALSE) +
+  xlab("Time") +
+  ylab("Survival probability") +
+  theme_classic()
+ggarrange(hw_type1,hw_type2,hw_all,nrow = 2,ncol = 2)
+```
+
+# Task 2
+
+We begin by generating artifical data.
+```{r}
+set.seed(42)
+n_observations <- 50
+time <- rweibull(n_observations, shape=0.7, scale=2.0)
+censoring <- rexp(n_observations, rate = 0.2)
+observed <- pmin(censoring,time) 
+delta <- as.numeric(time <= censoring)
+```
+
+We continue with creating fits, which will be used to produce either pointwise CI or Hall-Wellner confidence bounds.
+
+```{r}
+artificial_data <- tibble(time,censoring,observed,delta)
+pointwise_conf_bound <- artificial_data %>% 
+  survfit(formula = Surv(observed,delta)~1, data=., conf.type="plain", conf.int=0.95)
+plain_conf_bound <- artificial_data %>% 
+  survfit(formula = Surv(observed,delta)~1, data=., conf.type="plain", conf.int=0.95) %>% 
+  km.ci(conf.level=0.95, method="hall-wellner",tl = 0.004,tu = 7) 
+```
+
+We construct a plot of 
+
+  + Pointwise CI 
+  + Hall-Wellner confidence bounds 
+  + the KM estimate of the survival function
+  + The true (empirical) survival function as the complement of the empirical cummulative distribution function of the sampled (unobserved) times 
+
+```{r warning=FALSE}
+plot_data <- artificial_data %>%
+  mutate(
+    km = pointwise_conf_bound$surv,
+    pw_lower = pointwise_conf_bound$lower,
+    pw_upper = pointwise_conf_bound$upper,
+    hw_lower = plain_conf_bound$lower %>% pad(n = nrow(artificial_data)),
+    hw_upper = plain_conf_bound$upper %>% pad(n = nrow(artificial_data)),
+    time = pointwise_conf_bound$time,
+    true_surv = 1-ecdf(time)(time)
+    ) %>% 
+  drop_na()
+
+plot_data %>% 
+  ggplot() + 
+  geom_step(aes(x = time, y = km, color = "Kaplan-Meier")) +
+  geom_step(aes(x = time, y = pw_lower, color = "Pointwise CI"), linetype="dotdash") +
+  geom_step(aes(x = time, y = pw_upper, color = "Pointwise CI"), linetype="dotdash") + 
+  geom_step(aes(x = time, y = hw_lower, color = "Hall-Wellner CB")) +
+  geom_step(aes(x = time, y = hw_upper, color = "Hall-Wellner CB")) +
+  geom_step(aes(x = time,y = true_surv, color = "True survival function")) + 
+  xlab("Time") +
+  ylab("Survival probability") +
+  ggtitle("Simulation study") +
+  coord_cartesian(ylim=c(0,1)) +
+  theme_classic() 
+```
+

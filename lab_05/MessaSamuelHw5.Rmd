@@ -1,0 +1,422 @@
+---
+title: "Censored Data Analysis HW 5"
+author: "Samuel Messa"
+date: "December 16, 2019"
+output:
+  html_document: default
+  pdf_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data prep
+We begin by loading the dataset and necessary libraries. 
+
+The dataset includes 101 observations and three variables. The observations are acute lymphatic leukemia patients who had undergone bone a marrow transplant. The variable *time* contains the duration in months since transplantation to either death/relapse or end of follow up, whichever occured first. The outcome of interest is time to death or relapse of ALL (relapse-free survival). The variable *delta* includes the event indicator (1 = death or relapse, 0 = censoring). The variable *type* distinguishes two different types of transplant (1 = allogeneic, 2 = autologous).
+
+```{r, message=FALSE, warning=FALSE, paged.print=FALSE}
+load(url("http://karlin.mff.cuni.cz/~vavraj/cda/data/km_all.RData"))
+library(ggfortify)
+library(survival)
+library(survminer)
+library(flexsurv)
+library(tidyverse)
+library(ggpubr)
+library(magrittr)
+library(knitr)
+library(FHtest)
+library(muhaz)
+library(assertthat)
+```
+
+# Task 1
+
+In task 1 we begin by constructing a table, which will be used to calculate the test statistic used in the logrank test. This value will then be compared with the outputs of the functions *survdiff* and *FHtestrcc*.
+
+```{r,results="asis"}
+logrank_stats_table <- all %>% 
+  group_by(time) %>%
+  summarise(
+    d_j = sum(delta),
+    censored = n() - d_j,
+    d_1_j = sum(delta * (type == 1)),
+    censored_1 = sum(type == 1) - d_1_j
+    ) %>% 
+  mutate(
+    j = 1:n(),
+    y_j = rev(cumsum(rev(d_j+censored))),
+    y_1_j = rev(cumsum(rev(d_1_j+censored_1))),
+    e_j = d_j*(y_1_j/y_j),
+    d_1_j_diff_e_j = d_1_j - e_j,
+    v_j = d_j * y_1_j * (y_j - y_1_j) * ( y_j - d_j)/( y_j**2 * (y_j-1))
+    )
+logrank_stats_table %>% 
+  head(10) %>% 
+  knitr::kable(escape = FALSE)
+```
+```{r}
+self_calculated_unnormed_statistic <- sum(-logrank_stats_table$d_1_j_diff_e_j)
+self_calculated_variance <- sum(logrank_stats_table$v_j,na.rm = TRUE)
+
+self_calculated_statistic <- self_calculated_unnormed_statistic/sqrt(self_calculated_variance)
+self_calculated_statistic_squared <- self_calculated_statistic**2
+
+survdiff_fit <- all %>% survdiff(formula = Surv(time,delta)~type)
+fhttest_fit <- all %>% FHtestrcc(formula = Surv(time,delta)~type,data = .)
+```
+
+Asserting whether the self calculated and function-given statistics are the same.
+
+```{r}
+are_equal(self_calculated_statistic_squared,survdiff_fit$chisq)
+are_equal(self_calculated_statistic,fhttest_fit$statistic[[1]]) 
+```
+
+# Task 2 (Plotting) 
+
+```{r,fig.width=15,fig.height=15}
+surv_fit <- survfit(formula = Surv(time,delta)~type,conf.type=NULL,data = all)
+km <- surv_fit %>% autoplot(data = all,conf.int=FALSE,censor = FALSE) +
+  theme_classic() +
+  ggtitle("Kaplan-Meier")
+ch <- surv_fit %>% autoplot(data = all,conf.int=FALSE,censor = FALSE,fun = "cumhaz") +
+  theme_classic() +
+  ggtitle("Cummulative Hazard")
+haz_type_1 = muhaz(all %>% filter(type == 1) %>% pull(time),all %>% filter(type == 1) %>% pull(delta))
+haz_type_2 = muhaz(all %>% filter(type == 2) %>% pull(time),all %>% filter(type == 2) %>% pull(delta))
+smooth_haz <- rbind(
+    tibble(
+      time = haz_type_1$est.grid, 
+      value = haz_type_1$haz.est,
+      type ="1"
+      ),
+    tibble(
+      time = haz_type_2$est.grid, 
+      value = haz_type_2$haz.est,
+      type ="2"
+      )
+    )
+smoothed_haz <- smooth_haz %>% 
+  ggplot() +
+  geom_line(aes(x = time, y = value, color = type))+
+  ylab("Hazard rate")+
+  theme_classic() + 
+  ggtitle("Smoothed Hazard")
+ggarrange(km,ch,smoothed_haz,nrow = 3)
+```
+
+# Task 2 (Tests)
+Next we present the p-values corresponding to the 
+  
+  + Logrank, 
+  + Prentice-Wilcoxon 
+  + G(0,1) Fleming-Harrington tests.
+  
+None, besides the last rejects the null of equal hazards at the significance level alpha = 0.05. As the figures above suggest, none of them might be paticularly suitable to detect this type of null violation. However, if a decision would have to be made as to the test's suitability, the logrank test might be best given the lack of other information.  
+
+```{r,results="asis"}
+data.frame(
+  Logrank = survdiff(formula  = Surv(time,delta)~type,data=all)$chisq %>% pchisq(df=1, lower.tail = F),
+  `Prentice Wilcoxon` = survdiff(formula  = Surv(time,delta)~type,data=all, rho = 1)$chisq %>% pchisq(df=1, lower.tail = F),
+  `G(0,1) Fleming Harrington` = FHtestrcc(formula = Surv(time,delta)~type,data = all, rho = 0, lambda = 1)$pvalue,
+  row.names = c("P-Value")
+) %>% knitr::kable()
+```
+
+
+#Task 3.1 (Plotting)
+
+```{r,fig.width=15,fig.height=15}
+surv_fit <- survfit(formula = Surv(time,status)~trt,conf.type=NULL,data = veteran)
+km <- surv_fit %>% autoplot(data = veteran,conf.int=FALSE,censor = FALSE) +
+  theme_classic() +
+  ggtitle("Kaplan-Meier")
+ch <- surv_fit %>% autoplot(data = veteran,conf.int=FALSE,censor = FALSE,fun = "cumhaz") +
+  theme_classic() +
+  ggtitle("Cummulative Hazard")
+haz_type_1 = muhaz(veteran %>% filter(trt == 1) %>% pull(time),veteran %>% filter(trt == 1) %>% pull(status))
+haz_type_2 = muhaz(veteran %>% filter(trt == 2) %>% pull(time),veteran %>% filter(trt == 2) %>% pull(status))
+smooth_haz <- rbind(
+    tibble(
+      time = haz_type_1$est.grid, 
+      value = haz_type_1$haz.est,
+      trt ="1"
+      ),
+    tibble(
+      time = haz_type_2$est.grid, 
+      value = haz_type_2$haz.est,
+      trt ="2"
+      )
+    )
+smoothed_haz <- smooth_haz %>% 
+  ggplot() +
+  geom_line(aes(x = time, y = value, color = trt))+
+  ylab("Hazard rate")+
+  theme_classic() + 
+  ggtitle("Smoothed Hazard")
+ggarrange(km,ch,smoothed_haz,nrow = 3)
+```
+
+# Task 3.1 (Tests)
+
+Next we present the p-values corresponding to the 
+  
+  + Logrank, 
+  + Prentice-Wilcoxon, 
+  + G(0,1) Fleming-Harrington tests.
+  
+The plots above suggest that the hazards *cross over*, therefore a test that could detect a simmilar violation of the null might be suitable. The second plot seems to suggest that the difference in the cummulative hazards might be increasing with increasing time which would make the G(0,1) Fleming-Harrington test a suitable option.
+
+```{r}
+data.frame(
+  Logrank = survdiff(formula  = Surv(time,delta)~type,data=all)$chisq %>% pchisq(df=1, lower.tail = F),
+  `Prentice-Wilcoxon` = survdiff(formula  = Surv(time,delta)~type,data=all, rho = 1)$chisq %>% pchisq(df=1, lower.tail = F),
+  `G(0,1) Fleming-Harrington` = FHtestrcc(formula = Surv(time,delta)~type,data = all, rho = 0, lambda = 1)$pvalue,
+  row.names = c("P-Value")
+) %>% knitr::kable()
+```
+
+# Task 3.2 (Plotting)
+
+We begin by creating a categorical variable indicating whether the Karnof score is higher/lower than 60.
+```{r,fig.height=15,fig.width=20}
+veteran %<>% mutate(karno_score =  factor(karno > 60,labels = c("Low","High")))
+surv_fit <- survfit(formula = Surv(time,status)~karno_score,conf.type=NULL,data = veteran)
+km <- surv_fit %>% 
+  autoplot(data = veteran,conf.int=FALSE,censor = FALSE) +
+  theme_classic() +
+  ggtitle("Kaplan-Meier")
+ch <- surv_fit %>% 
+  autoplot(data = veteran,conf.int=FALSE,censor = FALSE,fun = "cumhaz") +
+  theme_classic() +
+  ggtitle("Cummulative Hazard")
+haz_type_1 = muhaz(veteran %>% filter(karno_score == "Low") %>% pull(time),veteran %>% filter(karno_score == "Low") %>% pull(status))
+haz_type_2 = muhaz(veteran %>% filter(karno_score == "High") %>% pull(time),veteran %>% filter(karno_score == "High") %>% pull(status))
+smooth_haz <- rbind(
+    tibble(
+      time = haz_type_1$est.grid, 
+      value = haz_type_1$haz.est,
+      karno_score ="Low"
+      ),
+    tibble(
+      time = haz_type_2$est.grid, 
+      value = haz_type_2$haz.est,
+      karno_score ="High"
+      )
+    )
+smoothed_haz <- smooth_haz %>% 
+  ggplot() +
+  geom_line(aes(x = time, y = value, color = karno_score))+
+  ylab("Hazard rate")+
+  theme_classic() + 
+  ggtitle("Smoothed Hazard")
+ggarrange(km,ch,smoothed_haz,nrow = 3)
+```
+
+# Task 3.2 (Tests)
+Next we present the p-values corresponding to the 
+  
+  + Logrank, 
+  + Prentice-Wilcoxon, 
+  + G(0,1) Fleming-Harrington tests.
+  
+This situation seems to be a bit more straightforwad. More specifically, the hazards widen much more at earlier times. Therefore, the suitable choice might be the Prentice-Wilcoxon test.
+
+```{r}
+data.frame(
+  Logrank = survdiff(formula  = Surv(time,status)~trt,data=veteran)$chisq %>% pchisq(df=1, lower.tail = F),
+  `Prentice-Wilcoxon` = survdiff(formula  = Surv(time,status)~trt,data=veteran, rho = 1)$chisq %>% pchisq(df=1, lower.tail = F),
+  `G(0,1) Fleming-Harrington` = FHtestrcc(formula = Surv(time,status)~trt,data = veteran, rho = 0, lambda = 1)$pvalue,
+  row.names = c("P-Value")
+) %>% knitr::kable()
+```
+
+
+
+# Task 4.1
+
+We begin by generating artifical data and creating the survfit object.
+```{r}
+set.seed(42)
+n_1 <- 100
+time_1 <- rweibull(n_1, shape=0.7, scale=2.0)
+time_2 <- rexp(n_1, rate = 0.3952569)
+
+censoring_1 <- rexp(n_1, rate = 0.2)
+censoring_2 <- rexp(n_1, rate = 0.2)
+
+observed_1 <- pmin(censoring_1,time_1)
+observed_2 <- pmin(censoring_2,time_2)
+
+delta_1 <- as.numeric(time_1 <= censoring_1)
+delta_2 <- as.numeric(time_2 <= censoring_2)
+
+artificial_data <- rbind(
+  tibble(time = time_1,censoring = censoring_1,observed = observed_1,delta = delta_1,type = "sample 1"),
+  tibble(time = time_2,censoring = censoring_2,observed = observed_2,delta = delta_2,type = "sample 2")
+)
+
+surv_fit <- survfit(formula  = Surv(time,delta)~type,data=artificial_data)
+```
+
+# Task 4.2 (Plotting)
+
+```{r,fig.height=15,fig.width=15}
+km <- surv_fit %>% 
+  autoplot(conf.int = FALSE,censor = FALSE) +
+  geom_line(
+    mapping = aes(
+      x = seq(
+        from = min(time), 
+        to = max(time), 
+        length.out = length(time)
+        ),
+      y = pweibull(
+        q = seq(
+          from = min(time),
+          to = max(time),
+          length.out = length(time)
+        ),
+        shape=0.7, 
+        scale=2,
+        lower.tail = FALSE
+        ),
+      color = "True 1"
+      ),
+    data = artificial_data
+    ) + 
+  geom_line(
+    mapping = aes(
+      x = seq(
+        from = min(time), 
+        to = max(time), 
+        length.out = length(time)
+        ),
+      y = pexp(
+        q = seq(
+          from = min(time),
+          to = max(time),
+          length.out = length(time)
+        ),
+        rate = 0.3952569,
+        lower.tail = FALSE
+        ),
+      color = "True 2"
+      ),
+    data = artificial_data
+    ) + 
+  theme_classic() + 
+  ggtitle("Kaplan-Meier")
+
+ch <- surv_fit %>% 
+  autoplot(conf.int = FALSE, fun = "cumhaz",censor = FALSE) +
+  geom_line(
+    mapping = aes(
+      x = seq(
+        from = min(time), 
+        to = max(time), 
+        length.out = length(time)
+        ),
+      y = flexsurv::Hweibull(
+        x = seq(
+          from = min(time),
+          to = max(time),
+          length.out = length(time)
+        ),
+        shape=0.7, 
+        scale=2
+        ),
+      color = "True 1"
+      ),
+    data = artificial_data
+    ) +
+  geom_line(
+    mapping = aes(
+      x = seq(
+        from = min(time), 
+        to = max(time), 
+        length.out = length(time)
+        ),
+      y = flexsurv::Hexp(
+        x = seq(
+          from = min(time),
+          to = max(time),
+          length.out = length(time)
+        ),
+        rate = 0.3952569
+        ),
+      color = "True 2"
+      ),
+    data = artificial_data
+    ) + 
+  theme_classic() + 
+  ggtitle("Cummulative Hazard")
+haz_type_1 = muhaz(artificial_data %>% filter(type == "sample 1") %>% pull(time),artificial_data %>% filter(type == "sample 1") %>% pull(delta))
+haz_type_2 = muhaz(artificial_data %>% filter(type == "sample 2") %>% pull(time),artificial_data %>% filter(type == "sample 2") %>% pull(delta))
+smooth_haz <- rbind(
+    tibble(
+      time = haz_type_1$est.grid, 
+      value = haz_type_1$haz.est,
+      type ="Sample 1"
+      ),
+    tibble(
+      time = haz_type_1$est.grid, 
+      value = flexsurv::hweibull(
+        x = seq(
+          from = min(haz_type_1$est.grid),
+          to = max(haz_type_1$est.grid),
+          length.out = length(haz_type_1$est.grid)
+        ),
+        shape=0.7, 
+        scale=2
+        ),
+      type ="True 1"
+      ),
+    tibble(
+      time = haz_type_2$est.grid, 
+      value = haz_type_2$haz.est,
+      type ="Sample 2"
+      ),
+    tibble(
+      time = haz_type_2$est.grid, 
+      value = flexsurv::hexp(
+        x = seq(
+          from = min(haz_type_2$est.grid),
+          to = max(haz_type_2$est.grid),
+          length.out = length(haz_type_2$est.grid)
+        ),
+        rate = 0.3952569
+        ),
+      type ="True 2"
+      )
+    )
+smoothed_haz <- smooth_haz %>% 
+  ggplot() +
+  geom_line(aes(x = time, y = value, color = type))+
+  ylab("Hazard rate")+
+  theme_classic() + 
+  ggtitle("Smoothed Hazard")
+ggarrange(km,ch,smoothed_haz,nrow = 3)
+```
+
+
+
+# Task 4.2 (Tests)
+
+Next we present the p-values corresponding to the 
+  
+  + Logrank, 
+  + Prentice-Wilcoxon, 
+  + G(0,1) Fleming-Harrington tests.
+  
+The smoothed hazards seem to (simmilarly to the previous task) differ most at earlier times. Observing, the true hazards this seem to hold as well. Notably, the hazard estimates based on the *observed* data cross over, where the theoretical do not. However, based on the figures of the observed generated times the Prentice-Wilcoxon test might be a suitable recommendation against this particular type of null violation.
+
+```{r}
+data.frame(
+  Logrank = survdiff(formula  = Surv(time,delta)~type,data=artificial_data)$chisq %>% pchisq(df=1, lower.tail = F),
+  `Prentice-Wilcoxon` = survdiff(formula  = Surv(time,delta)~type,data=artificial_data, rho = 1)$chisq %>% pchisq(df=1, lower.tail = F),
+  `G(0,1) Fleming-Harrington` = FHtestrcc(formula = Surv(time,delta)~type,data=artificial_data, rho = 0, lambda = 1)$pvalue,
+  row.names = c("P-Value")
+) %>% knitr::kable()
+```

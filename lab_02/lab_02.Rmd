@@ -1,0 +1,151 @@
+---
+title: "Point estimates of hazard and survival function"
+author: "Samuel Messa"
+date: "November 11, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Data prep
+The dataset which wil be the subjec of our analysis concerns itself with an engineering study where the time to failure of diesel generator fans is of interest. Seventy generators were studied. For each, the number of hours of running time until either fan failure or the end of the study (whichever came first) was recorded.
+
+We begin by loading necessary libraries and the dataset.
+```{r cars, message=FALSE, warning=FALSE, paged.print=FALSE}
+load(url("http://www.karlin.mff.cuni.cz/~vavraj/cda/data/fans.RData"))
+library(survival)
+library(tidyverse)
+library(ggpubr)
+library(magrittr)
+library(knitr)
+```
+
+We begin by presentining a few definitions, which will be used in subsequent tasks.
+
+  + The counting process $N_i(t) = \mathbb{1}(T_i \leq t, \delta_i = 1)$, representing the number of failiures for individual (or disel fans in this case) $i$ that were observed prior to or at time $t$.
+  
+  + The at-risk process $Y_i(t) = \mathbb{1}(X_i \geq t)$, indicating whether the subject $i$ is under observation at time $t$.
+  
+  + $\overline{N}(t)=\sum_{i=1}^n{N_i(t)}$
+  
+  + $\overline{Y}(t)=\sum_{i=1}^n{Y_i(t)}$
+  
+  + The Nelson-Aalen estimator of the cummulative hazard: $\widehat{\Lambda}(t)=\int_0^t\frac{\,\mathrm{d} \overline{N}(u)}{\overline{Y}(u)}=
+\sum_{\{i: t_i\leq t\}} \frac{\Delta\overline{N}(t_i)}{\overline{Y}(t_i)}$
+ 
+ + The Kaplan-Meier estimator of the survival function: $\widehat{S}(t)=\prod_{\{i: t_i\leq t\}}\biggl[1-\frac{\Delta\overline{N}(t_i)}{\overline{Y}(t_i)}\biggr]$
+ 
+ + The Fleming-Harrington estimator of the survival function: $\widehat{S}_*(t)=\exp\{-\widehat{\Lambda}(t)\}=\prod_{\{i: t_i\leq t\}}\exp\biggl\{-\frac{\Delta\overline{N}(t_i)}{\overline{Y}(t_i)}\biggr\}$
+  
+# Task 1
+Our first task will center around manual calculation of some of the above quantities (or their derivation) for the dataset *fans* for different values of $time$. 
+```{r}
+fans_manually_calcuated <- fans %>% 
+  group_by(time) %>%
+  summarise(d_i = sum(fail),censored = n() - d_i) %>% 
+  mutate(
+    y_i = rev(cumsum(rev(d_i+censored))),
+    di_yi = d_i/y_i,
+    Li = cumsum(di_yi),
+    Si = cumprod(1-di_yi),
+    Sstari = exp(-Li)
+    )
+
+fans_manually_calcuated  %>% select(
+    "$t_i$" = time,
+    "$\\Delta\\overline{N}(t_i)$" = d_i,
+    "$\\overline{Y}(t_i)$" = y_i,
+    "$\\frac{\\Delta\\overline{N}(t_i)}{\\overline{Y}(t_i)}$" = di_yi,
+    "$\\widehat{\\Lambda}(t_i)$" = Li,
+    "$\\widehat{S}(t_i)$" = Si,
+    "$\\widehat{S}_*(t_i)$" = Sstari
+    ) %>%
+  knitr::kable(escape = FALSE)
+```
+
+The above quantities were calculated as follows:
+  
+  + $\Delta\overline{N}(t_i)$ by grouping the original dataset by time and calculating the number of observations for which the variable $fail$ was equal to 1
+  
+  + $\overline{Y}(t_i)$ by reverseing the sum of the number of observations either censored or failed at each time applying a cummulative sum and reverseing the vector again 
+  
+  + $\frac{\Delta\overline{N}(t_i)}{\overline{Y}(t_i)}$ as a fraction of the two quantities desribed above for each time
+  
+  + $\widehat{\Lambda}(t_i)$ as as a cummulative sum of the above.
+  
+  + $\widehat{S}(t_i)$ as a cummulative product of the $1 - \widehat{S}(t_i)$ for $i = 1,2,\dots n$
+  
+  + $\widehat{S}_*(t_i)$ by applying the exponential to the negative of the above quantity for each time.
+  
+# Task 2 
+In the second task we will focus on plotting the manually calculated estimates of either the cummulative hazard or the survival functions.
+Notably, we impose the y-axis to stretch from 0 to 1.
+```{r,fig.width=9, fig.height=10}
+nelson_aalen <- fans_manually_calcuated %>% 
+  ggplot() +
+  geom_step(mapping = aes(x = time, y = Li)) + 
+  expand_limits(y = c(0,1)) + 
+  theme_classic() + 
+  xlab("Time [h]") + 
+  ylab("Cummulative Hazard") + 
+  ggtitle("Nelson-Aalen estimate of cummulative hazard")
+  
+
+surv_functions_km <- fans_manually_calcuated %>% 
+  ggplot() +
+  geom_step(mapping = aes(x = time, y = Si),color = "darkblue") + 
+  expand_limits(y = c(0,1)) + 
+  theme_classic() + 
+  xlab("Time [h]") + 
+  ylab("Survival Probability") + 
+  ggtitle("Kaplan-Meier estimate of the survival function")
+
+surv_functions_fh <- fans_manually_calcuated %>% 
+  ggplot() +
+  geom_step(mapping = aes(x = time, y = Sstari),color = "darkred") + 
+  expand_limits(y = c(0,1)) + 
+  theme_classic() + 
+  xlab("Time [h]") + 
+  ylab("Survival Probability") + 
+  ggtitle("Fleming-Harrington of the survival function")
+
+ggarrange(nelson_aalen,surv_functions_km,surv_functions_fh,ncol = 1)
+```
+
+# Task 3 
+
+In the last assignment our focul will be using the package **survival** to replicate the process in the previous tasks. We begin by constructing the 
+the survival objects and the corresponding fits using the type argument to specify the type of estimate we want produced. Finally we construct the plots using the same logic as above however using the estimates given by the survival fits.
+```{r,fig.width=9, fig.height=10}
+fans_km <- fans %>% survfit(formula = Surv(time,fail)~1)
+fans_fh <- fans %>% survfit(formula = Surv(time,fail)~1,type="fleming")
+
+nelson_aalen <- ggplot() +
+  geom_step(mapping = aes(x = fans_km$time, y = fans_km$cumhaz)) + 
+  expand_limits(y = c(0,1)) + 
+  theme_classic() + 
+  xlab("Time [h]") + 
+  ylab("Cummulative Hazard") + 
+  ggtitle("Nelson-Aalen estimate of cummulative hazard")
+  
+
+surv_functions_km <-ggplot() +
+  geom_step(mapping = aes(x = fans_km$time, y = fans_km$surv),color = "darkblue") + 
+  expand_limits(y = c(0,1)) + 
+  theme_classic() + 
+  xlab("Time [h]") + 
+  ylab("Survival Probability") + 
+  ggtitle("Kaplan-Meier estimate of the survival function")
+
+surv_functions_fh <- ggplot() +
+  geom_step(mapping = aes(x = fans_km$time, y = fans_fh$surv),color = "darkred") + 
+  expand_limits(y = c(0,1)) + 
+  theme_classic() + 
+  xlab("Time [h]") + 
+  ylab("Survival Probability") + 
+  ggtitle("Fleming-Harrington of the survival function")
+
+ggarrange(nelson_aalen,surv_functions_km,surv_functions_fh,ncol = 1)
+```
+
